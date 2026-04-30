@@ -64,7 +64,10 @@
     color: var(--text-secondary);
     margin-bottom: 6px;
   }
-  select, button {
+  .control-group.full-width {
+    grid-column: 1 / -1;
+  }
+  select, button, input[type="text"] {
     width: 100%;
     height: 36px;
     padding: 0 12px;
@@ -74,11 +77,18 @@
     background: var(--bg-card);
     border: 0.5px solid var(--border-secondary);
     border-radius: var(--radius-md);
-    cursor: pointer;
     transition: all 0.15s;
   }
-  select:hover, button:hover {
+  select, button {
+    cursor: pointer;
+  }
+  select:hover, button:hover, input[type="text"]:hover {
     border-color: var(--text-primary);
+  }
+  input[type="text"]:focus {
+    outline: none;
+    border-color: var(--text-primary);
+    box-shadow: 0 0 0 2px rgba(44, 44, 42, 0.1);
   }
   button {
     background: transparent;
@@ -117,7 +127,20 @@
     align-items: center;
   }
 
-  /* 預覽容器：手機上會縮放 worksheet */
+  /* 頁尾設計者資訊 */
+  .site-footer {
+    margin-top: 2rem;
+    padding-top: 1.25rem;
+    border-top: 0.5px solid var(--border-tertiary);
+    text-align: center;
+    font-size: 13px;
+    color: var(--text-secondary);
+  }
+  .site-footer b {
+    color: var(--text-primary);
+    font-weight: 500;
+  }
+
   .worksheet-wrapper {
     display: flex;
     justify-content: center;
@@ -126,10 +149,8 @@
   }
   .worksheet-scaler {
     transform-origin: top center;
-    /* JS 會根據螢幕寬度動態設定 transform: scale(...) */
   }
 
-  /* worksheet 永遠是固定 A4 尺寸 - 確保 PDF 一致 */
   .worksheet {
     width: 210mm;
     height: 297mm;
@@ -154,8 +175,8 @@
     font-size: 18pt;
     font-weight: 500;
     margin-bottom: 4mm;
+    word-break: break-word;
   }
-  /* 書寫欄位 - 加大空間 */
   .info-fields {
     display: grid;
     grid-template-columns: 1fr 1fr 1fr;
@@ -256,6 +277,17 @@
     color: #888780;
     text-align: center;
     flex-shrink: 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  /* 隱藏式渲染區，用於批次產生多份 PDF */
+  .render-zone {
+    position: absolute;
+    left: -99999px;
+    top: 0;
+    pointer-events: none;
   }
 
   .loading {
@@ -300,6 +332,11 @@
 
   <div class="controls">
     <div class="controls-grid">
+      <div class="control-group full-width">
+        <label>練習單標題</label>
+        <input type="text" id="custom-title" value="時鐘練習單" maxlength="30" placeholder="輸入練習單標題">
+      </div>
+
       <div class="control-group">
         <label>練習類型</label>
         <select id="exercise-type">
@@ -337,6 +374,18 @@
           <option value="minimal">極簡（4 點標示）</option>
         </select>
       </div>
+
+      <div class="control-group">
+        <label>產生份數</label>
+        <select id="copy-count">
+          <option value="1" selected>1 份</option>
+          <option value="2">2 份</option>
+          <option value="3">3 份</option>
+          <option value="5">5 份</option>
+          <option value="10">10 份</option>
+          <option value="20">20 份</option>
+        </select>
+      </div>
     </div>
 
     <div class="button-row">
@@ -356,11 +405,18 @@
       <div id="worksheet" class="worksheet"></div>
     </div>
   </div>
+
+  <div class="site-footer">
+    設計者：<b>愛迪樂 鍾孟修 職能治療師</b>
+  </div>
 </div>
+
+<!-- 隱藏的批次渲染區 -->
+<div class="render-zone" id="render-zone"></div>
 
 <div class="loading" id="loading">
   <div class="spinner"></div>
-  <span>正在產生 PDF...</span>
+  <span id="loading-text">正在產生 PDF...</span>
 </div>
 
 <script>
@@ -368,23 +424,24 @@
   const worksheet = document.getElementById('worksheet');
   const scaler = document.getElementById('worksheet-scaler');
   const wrapper = document.querySelector('.worksheet-wrapper');
+  const renderZone = document.getElementById('render-zone');
   const generateBtn = document.getElementById('generate-btn');
   const toggleBtn = document.getElementById('toggle-answer-btn');
   const downloadBtn = document.getElementById('download-btn');
   const answerStatus = document.getElementById('answer-status');
   const loading = document.getElementById('loading');
+  const loadingText = document.getElementById('loading-text');
+  const customTitleInput = document.getElementById('custom-title');
 
   let showAnswers = false;
   let currentQuestions = [];
 
-  // 根據視窗寬度自動縮放預覽 - 但 worksheet 本身永遠是 A4 真實尺寸
   function updateScale() {
-    const a4WidthPx = 210 * (96 / 25.4); // A4 寬度轉成 px (約 793px)
+    const a4WidthPx = 210 * (96 / 25.4);
     const wrapperWidth = wrapper.clientWidth;
     if (wrapperWidth < a4WidthPx) {
       const scale = wrapperWidth / a4WidthPx;
       scaler.style.transform = 'scale(' + scale + ')';
-      // 縮放後高度會變短，需要調整 wrapper 高度避免下方留白過多
       const a4HeightPx = 297 * (96 / 25.4);
       wrapper.style.height = (a4HeightPx * scale) + 'px';
     } else {
@@ -493,14 +550,15 @@
     }
   }
 
-  function renderWorksheet() {
-    const count = currentQuestions.length;
+  // 產生練習單 HTML（可重用）
+  function buildWorksheetHTML(questions, withAnswers, copyIndex, totalCopies) {
+    const count = questions.length;
     const layout = getLayout(count);
+    const title = customTitleInput.value.trim() || '時鐘練習單';
 
     let html = '';
-    // Header 簡化：只保留「時鐘練習單」標題與三個書寫欄位
     html += '<div class="worksheet-header">';
-    html += '<h2>時鐘練習單</h2>';
+    html += '<h2>' + escapeHTML(title) + '</h2>';
     html += '<div class="info-fields">';
     html += '<div class="field-item"><span class="field-label">姓名：</span><span class="field-blank"></span></div>';
     html += '<div class="field-item"><span class="field-label">日期：</span><span class="field-blank"></span></div>';
@@ -509,25 +567,25 @@
     html += '</div>';
 
     html += '<div class="questions-grid cols-' + layout.cols + ' rows-' + layout.rows + '">';
-    currentQuestions.forEach((q, idx) => {
+    questions.forEach((q, idx) => {
       html += '<div class="question-card">';
       html += '<div class="question-num">第 ' + (idx + 1) + ' 題</div>';
 
       if (q.type === 'draw') {
         html += '<div class="question-prompt">請畫出 ' + formatTime(q.time) + '</div>';
         html += '<div class="clock-wrapper">';
-        html += buildClockSVG(q.time, showAnswers, q.style, layout.clockSize);
+        html += buildClockSVG(q.time, withAnswers, q.style, layout.clockSize);
         html += '</div>';
-        html += '<div class="answer-line' + (showAnswers ? ' show-answer' : '') + '">';
-        html += showAnswers ? '答案：已標示指針' : '請畫出時針與分針';
+        html += '<div class="answer-line' + (withAnswers ? ' show-answer' : '') + '">';
+        html += withAnswers ? '答案：已標示指針' : '請畫出時針與分針';
         html += '</div>';
       } else {
         html += '<div class="question-prompt">時間是幾點幾分？</div>';
         html += '<div class="clock-wrapper">';
         html += buildClockSVG(q.time, true, q.style, layout.clockSize);
         html += '</div>';
-        html += '<div class="answer-line' + (showAnswers ? ' show-answer' : '') + '">';
-        if (showAnswers) {
+        html += '<div class="answer-line' + (withAnswers ? ' show-answer' : '') + '">';
+        if (withAnswers) {
           html += '答案：' + formatTime(q.time);
         } else {
           html += '答：<span class="answer-blank-small"></span>';
@@ -538,9 +596,27 @@
     });
     html += '</div>';
 
-    html += '<div class="worksheet-footer">時鐘認知訓練練習單</div>';
+    // 頁尾：左邊放份數編號，右邊放設計者
+    html += '<div class="worksheet-footer">';
+    if (totalCopies && totalCopies > 1) {
+      html += '<span>第 ' + copyIndex + ' / ' + totalCopies + ' 份</span>';
+    } else {
+      html += '<span></span>';
+    }
+    html += '<span>設計者：愛迪樂 鍾孟修 職能治療師</span>';
+    html += '</div>';
 
-    worksheet.innerHTML = html;
+    return html;
+  }
+
+  function escapeHTML(s) {
+    return String(s).replace(/[&<>"']/g, function(c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function renderWorksheet() {
+    worksheet.innerHTML = buildWorksheetHTML(currentQuestions, showAnswers, 1, 1);
     answerStatus.textContent = '答案：' + (showAnswers ? '顯示中' : '隱藏');
     updateScale();
   }
@@ -551,37 +627,21 @@
     renderWorksheet();
   }
 
+  // 在隱藏區塊建立一個 worksheet DOM 並回傳
+  function createOffscreenWorksheet(questions, withAnswers, copyIndex, totalCopies) {
+    const div = document.createElement('div');
+    div.className = 'worksheet';
+    div.innerHTML = buildWorksheetHTML(questions, withAnswers, copyIndex, totalCopies);
+    renderZone.appendChild(div);
+    return div;
+  }
+
   async function downloadPDF() {
+    const copyCount = parseInt(document.getElementById('copy-count').value);
     loading.classList.add('show');
-    // 先存目前的 transform，截圖時暫時還原為 1:1，避免縮放影響截圖
-    const originalTransform = scaler.style.transform;
-    const originalWrapperHeight = wrapper.style.height;
 
     try {
-      // 暫時取消縮放，讓 worksheet 以真實 A4 尺寸渲染後再截圖
-      scaler.style.transform = 'scale(1)';
-      wrapper.style.height = 'auto';
-
-      // 等一下讓 DOM 重繪
-      await new Promise(resolve => setTimeout(resolve, 150));
-
       const { jsPDF } = window.jspdf;
-
-      // 取得 worksheet 真實尺寸（不受螢幕大小影響）
-      const rect = worksheet.getBoundingClientRect();
-
-      const canvas = await html2canvas(worksheet, {
-        scale: 2,
-        useCORS: true,
-        backgroundColor: '#ffffff',
-        width: rect.width,
-        height: rect.height,
-        windowWidth: 1200,  // 強制使用桌面寬度的 viewport
-        windowHeight: 1600
-      });
-
-      const imgData = canvas.toDataURL('image/png');
-
       const pdf = new jsPDF({
         orientation: 'portrait',
         unit: 'mm',
@@ -589,19 +649,48 @@
         compress: true
       });
 
-      pdf.addImage(imgData, 'PNG', 0, 0, 210, 297, undefined, 'FAST');
+      // 清空渲染區
+      renderZone.innerHTML = '';
+
+      for (let i = 0; i < copyCount; i++) {
+        loadingText.textContent = '正在產生 PDF... (' + (i + 1) + ' / ' + copyCount + ')';
+
+        // 每一份產生新題目（同樣設定但不同題目）
+        const questions = (i === 0) ? currentQuestions : generateQuestions();
+        const tempWorksheet = createOffscreenWorksheet(questions, showAnswers, i + 1, copyCount);
+
+        // 等一下讓 DOM 重繪
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+        const canvas = await html2canvas(tempWorksheet, {
+          scale: 2,
+          useCORS: true,
+          backgroundColor: '#ffffff',
+          width: tempWorksheet.offsetWidth,
+          height: tempWorksheet.offsetHeight,
+          windowWidth: 1200,
+          windowHeight: 1600
+        });
+
+        const imgData = canvas.toDataURL('image/png');
+
+        if (i > 0) pdf.addPage();
+        pdf.addImage(imgData, 'PNG', 0, 0, 210, 297, undefined, 'FAST');
+      }
+
+      // 清空渲染區
+      renderZone.innerHTML = '';
 
       const today = new Date();
-      const filename = '時鐘練習單_' + today.getFullYear() + (today.getMonth() + 1 + '').padStart(2, '0') + (today.getDate() + '').padStart(2, '0') + (showAnswers ? '_含答案' : '') + '.pdf';
+      const titleForFilename = (customTitleInput.value.trim() || '時鐘練習單').replace(/[\/\\:*?"<>|]/g, '');
+      const filename = titleForFilename + '_' + today.getFullYear() + (today.getMonth() + 1 + '').padStart(2, '0') + (today.getDate() + '').padStart(2, '0') + (copyCount > 1 ? '_' + copyCount + '份' : '') + (showAnswers ? '_含答案' : '') + '.pdf';
       pdf.save(filename);
     } catch (err) {
       alert('PDF 產生失敗：' + err.message);
       console.error(err);
     } finally {
-      // 還原縮放狀態
-      scaler.style.transform = originalTransform;
-      wrapper.style.height = originalWrapperHeight;
       loading.classList.remove('show');
+      loadingText.textContent = '正在產生 PDF...';
     }
   }
 
@@ -612,10 +701,11 @@
   });
   downloadBtn.addEventListener('click', downloadPDF);
 
-  // 視窗大小改變時重新計算縮放
+  // 標題即時更新預覽
+  customTitleInput.addEventListener('input', renderWorksheet);
+
   window.addEventListener('resize', updateScale);
 
-  // 初始載入
   regenerate();
 })();
 </script>
