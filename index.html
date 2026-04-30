@@ -117,17 +117,25 @@
     align-items: center;
   }
 
-  /* A4 練習單樣式 - 固定 A4 尺寸，內容剛好填滿一頁 */
+  /* 預覽容器：手機上會縮放 worksheet */
   .worksheet-wrapper {
     display: flex;
     justify-content: center;
+    width: 100%;
+    overflow: hidden;
   }
+  .worksheet-scaler {
+    transform-origin: top center;
+    /* JS 會根據螢幕寬度動態設定 transform: scale(...) */
+  }
+
+  /* worksheet 永遠是固定 A4 尺寸 - 確保 PDF 一致 */
   .worksheet {
     width: 210mm;
     height: 297mm;
     background: #ffffff;
     color: #2c2c2a;
-    padding: 12mm 12mm;
+    padding: 14mm 14mm;
     box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
     border-radius: 4px;
     font-family: var(--font-sans);
@@ -138,37 +146,37 @@
   }
   .worksheet-header {
     border-bottom: 1px solid #d0d0c8;
-    padding-bottom: 3mm;
-    margin-bottom: 4mm;
+    padding-bottom: 5mm;
+    margin-bottom: 5mm;
     flex-shrink: 0;
   }
   .worksheet-header h2 {
-    font-size: 16pt;
+    font-size: 18pt;
     font-weight: 500;
-    margin-bottom: 2mm;
+    margin-bottom: 4mm;
   }
-  .info-row {
+  /* 書寫欄位 - 加大空間 */
+  .info-fields {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 6mm;
+    align-items: end;
+  }
+  .field-item {
     display: flex;
-    gap: 5mm;
-    font-size: 9.5pt;
-    color: #5f5e5a;
-    flex-wrap: wrap;
-    margin-bottom: 1.5mm;
-  }
-  .info-row b {
+    align-items: end;
+    gap: 2mm;
+    font-size: 11pt;
     color: #2c2c2a;
+  }
+  .field-label {
+    flex-shrink: 0;
     font-weight: 500;
   }
-  .name-row {
-    font-size: 9.5pt;
-    color: #5f5e5a;
-  }
-  .answer-blank {
-    display: inline-block;
-    border-bottom: 0.5px solid #888780;
-    min-width: 28mm;
-    margin: 0 2mm;
-    height: 12px;
+  .field-blank {
+    flex: 1;
+    border-bottom: 1px solid #888780;
+    height: 8mm;
   }
   .questions-grid {
     display: grid;
@@ -279,9 +287,6 @@
 
   @media (max-width: 768px) {
     body { padding: 0.75rem; }
-    .worksheet-wrapper {
-      overflow-x: auto;
-    }
   }
 </style>
 </head>
@@ -347,7 +352,9 @@
   </div>
 
   <div class="worksheet-wrapper">
-    <div id="worksheet" class="worksheet"></div>
+    <div class="worksheet-scaler" id="worksheet-scaler">
+      <div id="worksheet" class="worksheet"></div>
+    </div>
   </div>
 </div>
 
@@ -359,6 +366,8 @@
 <script>
 (function() {
   const worksheet = document.getElementById('worksheet');
+  const scaler = document.getElementById('worksheet-scaler');
+  const wrapper = document.querySelector('.worksheet-wrapper');
   const generateBtn = document.getElementById('generate-btn');
   const toggleBtn = document.getElementById('toggle-answer-btn');
   const downloadBtn = document.getElementById('download-btn');
@@ -367,6 +376,22 @@
 
   let showAnswers = false;
   let currentQuestions = [];
+
+  // 根據視窗寬度自動縮放預覽 - 但 worksheet 本身永遠是 A4 真實尺寸
+  function updateScale() {
+    const a4WidthPx = 210 * (96 / 25.4); // A4 寬度轉成 px (約 793px)
+    const wrapperWidth = wrapper.clientWidth;
+    if (wrapperWidth < a4WidthPx) {
+      const scale = wrapperWidth / a4WidthPx;
+      scaler.style.transform = 'scale(' + scale + ')';
+      // 縮放後高度會變短，需要調整 wrapper 高度避免下方留白過多
+      const a4HeightPx = 297 * (96 / 25.4);
+      wrapper.style.height = (a4HeightPx * scale) + 'px';
+    } else {
+      scaler.style.transform = 'scale(1)';
+      wrapper.style.height = 'auto';
+    }
+  }
 
   function generateTime(level) {
     const hour = Math.floor(Math.random() * 12) + 1;
@@ -458,41 +483,29 @@
     return questions;
   }
 
-  // 根據題數決定佈局與時鐘大小
   function getLayout(count) {
     if (count === 6) {
-      // 視覺友善版：2 欄 x 3 列，時鐘大
       return { cols: 2, rows: 3, clockSize: 200 };
     } else if (count === 8) {
-      // 標準版：2 欄 x 4 列
       return { cols: 2, rows: 4, clockSize: 140 };
     } else {
-      // 12 題：3 欄 x 4 列，時鐘小一點
       return { cols: 3, rows: 4, clockSize: 110 };
     }
   }
 
   function renderWorksheet() {
-    const type = document.getElementById('exercise-type').value;
-    const level = document.getElementById('difficulty').value;
     const count = currentQuestions.length;
     const layout = getLayout(count);
-    const levelNames = { '1': '整點', '2': '整點＋半點', '3': '每 15 分', '4': '每 5 分', '5': '任意分鐘' };
-    const typeNames = { 'mixed': '混合練習', 'draw': '時鐘繪製', 'read': '時間判讀' };
-
-    const today = new Date();
-    const dateStr = today.getFullYear() + '/' + String(today.getMonth() + 1).padStart(2, '0') + '/' + String(today.getDate()).padStart(2, '0');
 
     let html = '';
+    // Header 簡化：只保留「時鐘練習單」標題與三個書寫欄位
     html += '<div class="worksheet-header">';
     html += '<h2>時鐘練習單</h2>';
-    html += '<div class="info-row">';
-    html += '<span>類型：<b>' + typeNames[type] + '</b></span>';
-    html += '<span>難度：<b>' + levelNames[level] + '</b></span>';
-    html += '<span>題數：<b>' + count + ' 題</b></span>';
-    html += '<span>日期：<b>' + dateStr + '</b></span>';
+    html += '<div class="info-fields">';
+    html += '<div class="field-item"><span class="field-label">姓名：</span><span class="field-blank"></span></div>';
+    html += '<div class="field-item"><span class="field-label">日期：</span><span class="field-blank"></span></div>';
+    html += '<div class="field-item"><span class="field-label">完成時間：</span><span class="field-blank"></span></div>';
     html += '</div>';
-    html += '<div class="name-row">姓名：<span class="answer-blank"></span> &nbsp;&nbsp; 完成時間：<span class="answer-blank"></span></div>';
     html += '</div>';
 
     html += '<div class="questions-grid cols-' + layout.cols + ' rows-' + layout.rows + '">';
@@ -529,6 +542,7 @@
 
     worksheet.innerHTML = html;
     answerStatus.textContent = '答案：' + (showAnswers ? '顯示中' : '隱藏');
+    updateScale();
   }
 
   function regenerate() {
@@ -539,21 +553,31 @@
 
   async function downloadPDF() {
     loading.classList.add('show');
+    // 先存目前的 transform，截圖時暫時還原為 1:1，避免縮放影響截圖
+    const originalTransform = scaler.style.transform;
+    const originalWrapperHeight = wrapper.style.height;
+
     try {
-      await new Promise(resolve => setTimeout(resolve, 100));
+      // 暫時取消縮放，讓 worksheet 以真實 A4 尺寸渲染後再截圖
+      scaler.style.transform = 'scale(1)';
+      wrapper.style.height = 'auto';
+
+      // 等一下讓 DOM 重繪
+      await new Promise(resolve => setTimeout(resolve, 150));
 
       const { jsPDF } = window.jspdf;
 
-      // worksheet 已固定為 A4 尺寸（210mm x 297mm）
-      // 用 html2canvas 截圖後直接填滿一頁，避免分頁問題
+      // 取得 worksheet 真實尺寸（不受螢幕大小影響）
+      const rect = worksheet.getBoundingClientRect();
+
       const canvas = await html2canvas(worksheet, {
         scale: 2,
         useCORS: true,
         backgroundColor: '#ffffff',
-        width: worksheet.offsetWidth,
-        height: worksheet.offsetHeight,
-        windowWidth: worksheet.offsetWidth,
-        windowHeight: worksheet.offsetHeight
+        width: rect.width,
+        height: rect.height,
+        windowWidth: 1200,  // 強制使用桌面寬度的 viewport
+        windowHeight: 1600
       });
 
       const imgData = canvas.toDataURL('image/png');
@@ -565,7 +589,6 @@
         compress: true
       });
 
-      // 直接填滿整頁 A4，因為來源已經是 A4 比例
       pdf.addImage(imgData, 'PNG', 0, 0, 210, 297, undefined, 'FAST');
 
       const today = new Date();
@@ -575,6 +598,9 @@
       alert('PDF 產生失敗：' + err.message);
       console.error(err);
     } finally {
+      // 還原縮放狀態
+      scaler.style.transform = originalTransform;
+      wrapper.style.height = originalWrapperHeight;
       loading.classList.remove('show');
     }
   }
@@ -585,6 +611,9 @@
     renderWorksheet();
   });
   downloadBtn.addEventListener('click', downloadPDF);
+
+  // 視窗大小改變時重新計算縮放
+  window.addEventListener('resize', updateScale);
 
   // 初始載入
   regenerate();
